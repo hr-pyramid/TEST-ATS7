@@ -617,10 +617,10 @@
     modal('candidateModal').show(); }
   function saveRecord(action,btn){ if(!canEdit())return alert("Read-only."); busy(btn,true,'Saving…');
     if(!el('Candidate Code').value)el('Candidate Code').value=genCode(); if(!el('Added By').value)el('Added By').value=localStorage.getItem("portalUser")||ROLE;
-    let url=`${API_URL}?action=${action}&sheetName=${encodeURIComponent(TARGET_TAB)}`; if(action==='update')url+=`&rowNumber=${el('rowNumber').value}`;
-    fields.forEach(f=>{const e2=el(f);if(e2&&f!=='Source')url+=`&${encodeURIComponent(f)}=${encodeURIComponent(e2.value)}`;});
-    url+=`&Source=${encodeURIComponent(sourceComposite('Source','SourceRef'))}`;
-    fetch(url).then(r=>r.json()).then(res=>{ modal('candidateModal').hide(); fetchData(); }).catch(e=>{console.error(e);alert("Save failed");}).finally(()=>busy(btn,false)); }
+    const data={action,sheetName:TARGET_TAB}; if(action==='update')data.rowNumber=el('rowNumber').value;
+    fields.forEach(f=>{const e2=el(f);if(e2&&f!=='Source')data[f]=e2.value;});
+    data["Source"]=sourceComposite('Source','SourceRef');
+    postJSON(data).then(res=>{ modal('candidateModal').hide(); fetchData(); }).catch(e=>{console.error(e);alert("Save failed — please retry.");}).finally(()=>busy(btn,false)); }
   function deleteRecord(rn){ if(!canEdit())return; if(!confirm("Delete record?"))return; showLoading(true);
     fetch(`${API_URL}?action=delete&sheetName=${encodeURIComponent(TARGET_TAB)}&rowNumber=${rn}`).then(r=>r.json()).then(res=>{fetchData();}).catch(e=>{console.error(e);showLoading(false);}); }
   function resetForm(){ ['rowNumber','Resume','Profile JSON','Tagged Job'].forEach(i=>el(i).value=''); fields.forEach(f=>{const e2=el(f);if(e2&&e2.type!=='hidden')e2.value='';}); setSourceField('');
@@ -736,12 +736,10 @@
     if(rn){ const j=jobs.find(x=>x.rowNumber===rn); if(!j)return; el('jobTitle').innerText="Edit job post"; el('jobRow').value=rn; jobFields.forEach(h=>{const e2=jobEl(h);if(e2)e2.value=j[h]||'';}); onJobLoc(); el('jobSubmit').style.display='none'; el('jobUpdate').style.display='inline-block'; }
     else { el('jobTitle').innerText="Create job post"; el('jobSubmit').style.display='inline-block'; el('jobUpdate').style.display='none'; } modal('jobModal').show(); }
   function saveJob(action,btn){ if(!canJob())return alert("You don't have rights to create job posts."); if(!el('Job ID').value||!el('Job Title').value)return alert("Job ID and Title required."); busy(btn,true,'Saving…');
-    let url=`${API_URL}?action=${action}&sheetName=${encodeURIComponent(JOBS_TAB)}`; if(action==='update')url+=`&rowNumber=${el('jobRow').value}`;
-    jobFields.forEach(h=>{const e2=jobEl(h);if(e2)url+=`&${encodeURIComponent(h)}=${encodeURIComponent(e2.value)}`;});
-    if(action==='create'){ url+=`&Posted Date=${encodeURIComponent(new Date().toISOString().slice(0,10))}`;
-      url+=`&Created By=${encodeURIComponent(localStorage.getItem("portalUser")||ROLE)}`;
-      url+=`&Approval=${encodeURIComponent(isAdmin()?"Approved":"Pending")}`; }
-    fetch(url).then(r=>r.json()).then(res=>{ modal('jobModal').hide(); fetchData(); if(action==='create'&&!isAdmin())alert("Job post submitted for admin approval. It will be enabled and assigned to you once approved."); }).catch(e=>{console.error(e);alert("Save failed");}).finally(()=>busy(btn,false)); }
+    const data={action,sheetName:JOBS_TAB}; if(action==='update')data.rowNumber=el('jobRow').value;
+    jobFields.forEach(h=>{const e2=jobEl(h);if(e2)data[h]=e2.value;});
+    if(action==='create'){ data["Posted Date"]=new Date().toISOString().slice(0,10); data["Created By"]=localStorage.getItem("portalUser")||ROLE; data["Approval"]=isAdmin()?"Approved":"Pending"; }
+    postJSON(data).then(res=>{ modal('jobModal').hide(); fetchData(); if(action==='create'&&!isAdmin())alert("Job post submitted for admin approval. It will be enabled and assigned to you once approved."); }).catch(e=>{console.error(e);alert("Save failed — please retry.");}).finally(()=>busy(btn,false)); }
   function deleteJob(rn){ if(!canEdit())return; if(!confirm("Delete posting?"))return; showLoading(true); fetch(`${API_URL}?action=delete&sheetName=${encodeURIComponent(JOBS_TAB)}&rowNumber=${rn}`).then(r=>r.json()).then(res=>{fetchData();}).catch(e=>{console.error(e);showLoading(false);}); }
   function resetJobForm(){ el('jobRow').value=''; jobFields.forEach(h=>{const e2=jobEl(h);if(e2)e2.value='';}); el('Status').value='Open'; el('jobLocLink').value=''; el('jdStatus').innerText=''; }
   function buildLocOptions(){ el('Location').innerHTML='<option value="">— select —</option>'+locations.map(l=>`<option value="${esc(l["Location Name"])}">${esc(l["Location Name"])}</option>`).join(''); }
@@ -909,17 +907,17 @@
         <td><select class="form-select form-select-sm" onchange="bulkItems[${i}].job=this.value">${jopt(b.job)}</select></td>
         <td>${b.score?`<span class="badge" style="background:${scoreColor(b.score)}">${b.score}</span>`:'—'}</td></tr>`).join('')+`</tbody></table></div>`; }
   async function saveBulk(btn){ const items=bulkItems.filter(b=>b&&b.include&&!b.error); if(!items.length)return alert("Nothing selected."); busy(btn,true,'Saving…');
-    const batchSource=sourceComposite('bulkSource','bulkSourceRef')||"Bulk Upload";
+    const batchSource=sourceComposite('bulkSource','bulkSourceRef')||"Bulk Upload"; let ok=0,fail=0;
     for(let n=0;n<items.length;n++){ const b=items[n]; el('bulkStatus').innerText=`Saving ${n+1}/${items.length}…`;
       const s=parseInt(b.score)||0; const stars=s?Math.min(5,Math.max(1,Math.round(s/20))):''; const r10=s?Math.round(s/10*10)/10:'';
-      let url=`${API_URL}?action=create&sheetName=${encodeURIComponent(TARGET_TAB)}`
-        +`&Candidate Code=${encodeURIComponent(genCode())}&Candidate Name=${encodeURIComponent(b.name)}&Mail Id=${encodeURIComponent(b.email)}&Contact No=${encodeURIComponent(b.phone)}`
-        +`&Current Company=${encodeURIComponent(b.company)}&Role=${encodeURIComponent(b.role)}&Designation=${encodeURIComponent(b.role)}&Department=${encodeURIComponent(b.dept)}`
-        +`&Candidate Status=Applied&Source=${encodeURIComponent(batchSource)}&Added By=${encodeURIComponent(localStorage.getItem("portalUser")||ROLE)}`
-        +`&Resume=${encodeURIComponent(b.resume)}&Tagged Job=${encodeURIComponent(b.job)}&AI Score=${encodeURIComponent(b.score)}&Score Notes=${encodeURIComponent(b.remarks)}`
-        +`&Rating10=${encodeURIComponent(r10)}&Stars=${encodeURIComponent(stars)}&Profile JSON=${encodeURIComponent(JSON.stringify(b.profile).slice(0,49000))}`;
-      try{ await fetch(url).then(r=>r.json()); }catch(e){ console.error(e); } }
-    busy(btn,false); modal('bulkModal').hide(); fetchData(); }
+      const data={action:'create',sheetName:TARGET_TAB,
+        "Candidate Code":genCode(),"Candidate Name":b.name,"Mail Id":b.email,"Contact No":b.phone,
+        "Current Company":b.company,"Role":b.role,"Designation":b.role,"Department":b.dept,
+        "Candidate Status":"Applied","Source":batchSource,"Added By":localStorage.getItem("portalUser")||ROLE,
+        "Resume":b.resume,"Tagged Job":b.job,"AI Score":b.score,"Score Notes":b.remarks,
+        "Rating10":r10,"Stars":stars,"Profile JSON":JSON.stringify(b.profile).slice(0,49000)};
+      try{ await postJSON(data); ok++; }catch(e){ console.error(e); fail++; } }
+    busy(btn,false); modal('bulkModal').hide(); fetchData(); if(fail)alert(`Saved ${ok}, ${fail} failed — please retry the failed ones.`); }
 
   // ── admin users ──
   function fetchUsers(){ if(!isAdmin())return; fetch(`${API_URL}?action=userList`).then(r=>r.json()).then(res=>{if(res.status==="success"){users=res.data;renderUsers();}}).catch(e=>console.error(e)); }
