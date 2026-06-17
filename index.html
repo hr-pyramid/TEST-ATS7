@@ -659,7 +659,11 @@
     ['dragleave','drop'].forEach(ev=>z.addEventListener(ev,e=>{e.preventDefault();z.style.background='';}));
     z.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];if(!f)return;const dt=new DataTransfer();dt.items.add(f);el('resumeFile').files=dt.files;onFilePicked(true);}); }
   function toBase64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=()=>rej(new Error("read failed"));r.readAsDataURL(file);});}
-  function postJSON(p){return fetch(API_URL,{method:'POST',redirect:'follow',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p)}).then(r=>r.json());}
+  function postJSON(p){ return fetch(API_URL,{method:'POST',redirect:'follow',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p)})
+    .then(async r=>{ const t=await r.text(); try{ return JSON.parse(t); }catch(e){ return {status:"error",message:"Unexpected server response ("+r.status+"). The web app may need redeploying."}; } })
+    .catch(e=>({status:"error",message:"Network error — "+((e&&e.message)||e)+". Check your connection / the web-app URL."})); }
+  // Upload a file to Drive with a couple of retries; always resolves to {status, link|message}.
+  async function uploadWithRetry(b64,f){ let last="upload failed"; for(let a=0;a<3;a++){ const up=await postJSON({action:"uploadResume",fileData:b64,mimeType:f.type||"application/pdf",fileName:f.name}); if(up&&up.status==="success"&&up.link)return up; last=(up&&up.message)||last; await sleep(700*(a+1)); } return {status:"error",message:last}; }
   async function extractText(file){ const nm=file.name.toLowerCase(); if(extractCache.name===file.name&&extractCache.text)return extractCache.text; const buf=await file.arrayBuffer();let t="";
     if(nm.endsWith('.pdf')){const pdf=await pdfjsLib.getDocument({data:buf}).promise;const max=Math.min(pdf.numPages,12);for(let i=1;i<=max;i++){const p=await pdf.getPage(i);const c=await p.getTextContent();t+=c.items.map(it=>it.str).join(" ")+"\n";}}
     else if(nm.endsWith('.docx')){ t=(await mammoth.extractRawText({arrayBuffer:buf})).value; }
@@ -674,11 +678,20 @@
   function applyParsed(p){ setVal("Candidate Name",titleCaseName(p["Candidate Name"]));setVal("Mail Id",p["Mail Id"]);setVal("Contact No",cleanPhone(p["Contact No"]));setVal("Designation",p["Designation"]);setVal("Department",p["Department"]);setVal("Role",p["Role"]); if(p["Source"])setSourceField(p["Source"]);
     const co=p["current_company"]||(p.experience&&p.experience[0]&&p.experience[0].company); if(co)setVal("Current Company",co); const note=[p["Summary"],p["Skills"]?("Skills: "+p["Skills"]):""].filter(Boolean).join(" — "); if(note)setVal("Remarks",note); el('Profile JSON').value=JSON.stringify(p).slice(0,49000); checkDupe(); }
   async function parseSelectedResume(btn){ const f=el('resumeFile').files[0],st=el('parseStatus'); if(!f){st.className="small text-danger";st.innerText="Pick a file first.";return;} busy(btn,true,'Parsing…');
+    let resumeLink='',uploadErr='',parseErr='';
+    // 1) Drive upload runs independently so a parse error (or missing AI key) never blocks saving the CV.
+    const uploadJob=(async()=>{ try{ const b64=await toBase64(f); if(!b64)throw new Error("file is empty or unreadable — if it's stored in iCloud/Drive, download it to this device first"); const up=await uploadWithRetry(b64,f); if(up.status==="success"&&up.link)resumeLink=up.link; else uploadErr=up.message||"upload failed"; }catch(e){ uploadErr=e.message; } })();
+    // 2) AI parse (best-effort)
     try{ st.className="small text-primary";st.innerText="Reading…"; const text=await extractText(f); const data=text?null:await toBase64(f); const jd=(el('jd').value||'').trim(); st.innerText=jd?"Parsing & scoring…":"Parsing…";
       const p=await gemini(buildParts(jd?(P_PARSE+P_SCORE_ADD+"\n\nJOB DESCRIPTION:\n"+jd):P_PARSE,text,f,data)); applyParsed(p); if(jd&&p.score!==undefined)showScore(p);
-      st.innerText="Saving to Drive…"; const dd=data||await toBase64(f); const up=await postJSON({action:"uploadResume",fileData:dd,mimeType:f.type||"application/pdf",fileName:f.name}); if(up.status==="success"&&up.link)el('Resume').value=up.link;
-      st.className="small text-success"; st.innerHTML=`Parsed &amp; stored. ${up.link?'<a href="'+up.link+'" target="_blank">CV</a>':''}`;
-    }catch(e){console.error(e);st.className="small text-danger";st.innerText="Failed: "+e.message;} finally{busy(btn,false);} }
+    }catch(e){ console.error(e); parseErr=e.message; }
+    st.innerText="Saving to Drive…"; await uploadJob; if(resumeLink)el('Resume').value=resumeLink;
+    const cv=resumeLink?` <a href="${resumeLink}" target="_blank">CV</a>`:'';
+    if(parseErr&&!resumeLink){ st.className="small text-danger"; st.innerText="Failed: "+parseErr+(uploadErr?(" · CV upload: "+uploadErr):""); }
+    else if(parseErr){ st.className="small text-warning"; st.innerHTML="CV saved, but parsing failed: "+esc(parseErr)+"."+cv; }
+    else if(uploadErr){ st.className="small text-warning"; st.innerText="Parsed, but CV upload failed: "+uploadErr; }
+    else { st.className="small text-success"; st.innerHTML="Parsed &amp; stored."+cv; }
+    busy(btn,false); }
   async function scoreSelectedResume(btn){ const f=el('resumeFile').files[0],st=el('scoreStatus'); if(!f){st.className="small text-danger";st.innerText="Pick a file first.";return;} const jd=(el('jd').value||'').trim(); if(!jd){st.className="small text-danger";st.innerText="Paste a JD first.";return;} busy(btn,true,'Scoring…');
     try{ st.className="small text-primary";st.innerText="Scoring…"; const text=await extractText(f); const data=text?null:await toBase64(f); const d=await gemini(buildParts(P_SCORE+"\n\nJOB DESCRIPTION:\n"+jd,text,f,data)); showScore(d); st.className="small text-success";st.innerText="Scored."; }
     catch(e){console.error(e);st.className="small text-danger";st.innerText="Failed: "+e.message;} finally{busy(btn,false);} }
@@ -868,10 +881,14 @@
     const setp=()=>{ el('bulkStatus').className="small text-primary"; el('bulkStatus').innerText=`Parsing ${done}/${files.length} (×${conc} in parallel)…`; }; setp();
     async function worker(i,slot){ const f=files[i];
       try{ let text=null; try{ text=await extractText(f); }catch(ex){ bulkItems[i]={include:false,file:f.name,error:ex.message,profile:{}}; done++; setp(); return; }
-        const b64=await toBase64(f);
-        const [p,up]=await Promise.all([ gemini(buildParts(prompt,text,f,b64),slot), postJSON({action:"uploadResume",fileData:b64,mimeType:f.type||"application/pdf",fileName:f.name}) ]);
+        const b64=await toBase64(f); if(!b64){ bulkItems[i]={include:false,file:f.name,error:"file empty/unreadable (download it locally if stored in cloud)",profile:{}}; done++; setp(); return; }
+        const upP=uploadWithRetry(b64,f); // resilient; runs alongside the AI call
+        let p=null,perr='';
+        try{ p=await gemini(buildParts(prompt,text,f,b64),slot); }catch(e){ perr=e.message; }
+        const up=await upP; const link=(up.status==="success"&&up.link)?up.link:'';
+        if(!p){ bulkItems[i]={include:false,file:f.name,error:perr||"parse failed",resume:link,profile:{}}; done++; setp(); return; }
         const sc2=parseInt(p["score"])||0;
-        bulkItems[i]={ include:true, file:f.name, resume:(up.status==="success"?up.link:''), profile:p,
+        bulkItems[i]={ include:true, file:f.name, resume:link, profile:p,
           name:titleCaseName(p["Candidate Name"]||''), email:p["Mail Id"]||'', phone:cleanPhone(p["Contact No"]||''), company:p["current_company"]||((p.experience&&p.experience[0])?p.experience[0].company:'')||'',
           role:p["Role"]||'', dept:p["Department"]||'', job:(sc2>=85?(p["match_job_id"]||''):''), score:p["score"]||'', remarks:(sc2>=85?(p["remarks"]||p["Summary"]||''):('No suitable job found (best '+sc2+'%). '+(p["remarks"]||''))) };
       }catch(e){ bulkItems[i]={include:false,file:f.name,error:e.message,profile:{}}; }
